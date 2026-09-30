@@ -288,10 +288,11 @@ function NumberInput({ value, onChange, className = "", onBlur, onFocus, placeho
       type="text"
       inputMode="decimal"
       data-numeric-input="true"
+      maxLength={3}
       value={draft}
       placeholder={placeholder}
       onChange={(e) => {
-        const nextValue = e.target.value;
+        const nextValue = e.target.value.slice(0, 3);
         if (!/^-?\d*\.?\d*$/.test(nextValue)) return;
         setDraft(nextValue);
         onChange?.(nextValue);
@@ -352,9 +353,11 @@ function StatBox({ label, children, icon: Icon, extra }) {
 
 function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, editableLabel, onChange, onToggleLabel }) {
   const [colorOptionsOpen, setColorOptionsOpen] = useState(false);
-  const pct = Math.max(0, Math.min(100, (cur / Math.max(1, max)) * 100));
+  const safeMax = Math.max(0, toNumber(max, 0));
+  const safeCur = Math.max(0, Math.min(safeMax, toNumber(cur, 0)));
+  const pct = safeMax === 0 ? 0 : Math.max(0, Math.min(100, (safeCur / safeMax) * 100));
   const fallbackColor = editableLabel ? "#7c3aed" : "#b4232e";
-  const step = (d) => onChange({ cur: Math.max(0, Math.min(max, cur + d)) });
+  const step = (amount) => onChange({ cur: Math.max(0, Math.min(safeMax, safeCur + amount)) });
   return (
     <div>
       <div className="flex items-center justify-center gap-1.5 mb-1">
@@ -385,35 +388,41 @@ function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, ed
       <div className="relative h-10 rounded border border-zinc-800 overflow-hidden bg-zinc-950">
         <div
           className="absolute inset-y-0 left-0 transition-all duration-300"
-          style={{ width: `${pct}%`, backgroundColor: color || fallbackColor }}
+          style={{
+            width: `${pct}%`,
+            backgroundColor: color || fallbackColor,
+            filter: `saturate(${0.3 + (pct / 100) * 0.7}) brightness(${0.55 + (pct / 100) * 0.45})`,
+          }}
         />
         <div className="relative h-full flex items-center justify-between px-0.5">
           <div className="flex items-center h-full">
-            <button onClick={() => step(-5)} className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(-5)} aria-label={`Diminuir ${label} em 5`} title="Diminuir 5" className="px-1 text-gray-500 hover:text-white">
               <ChevronsLeft size={14} />
             </button>
-            <button onClick={() => step(-1)} className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(-1)} aria-label={`Diminuir ${label} em 1`} title="Diminuir 1" className="px-1 text-gray-500 hover:text-white">
               <ChevronLeft size={14} />
             </button>
           </div>
           <div className="flex items-baseline gap-1">
             <NumberInput
-              value={cur}
-              onChange={(value) => onChange({ cur: toNumber(value, 0) })}
+              value={safeCur}
+              onChange={(value) => onChange({ cur: Math.max(0, toNumber(value, 0)) })}
+              onBlur={() => onChange({ cur: Math.max(0, Math.min(safeMax, toNumber(cur, 0))) })}
               className="w-10 bg-transparent text-center text-lg font-bold text-white focus:outline-none [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]"
             />
             <span className="text-white/50">/</span>
             <NumberInput
-              value={max}
-              onChange={(value) => onChange({ max: toNumber(value, 0) })}
+              value={safeMax}
+              onChange={(value) => onChange({ max: Math.max(0, toNumber(value, 0)) })}
+              onBlur={() => onChange({ max: Math.max(0, toNumber(max, 0)), cur: Math.min(safeCur, Math.max(0, toNumber(max, 0))) })}
               className="w-10 bg-transparent text-center text-sm text-white/70 focus:outline-none"
             />
           </div>
           <div className="flex items-center h-full">
-            <button onClick={() => step(1)} className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(1)} aria-label={`Aumentar ${label} em 1`} title="Aumentar 1" className="px-1 text-gray-500 hover:text-white">
               <ChevronRight size={14} />
             </button>
-            <button onClick={() => step(5)} className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(5)} aria-label={`Aumentar ${label} em 5`} title="Aumentar 5" className="px-1 text-gray-500 hover:text-white">
               <ChevronsRight size={14} />
             </button>
           </div>
@@ -534,7 +543,7 @@ function AttrHex({ attrs, locked, onToggleLock, onScoreChange, onRoll }) {
                   value={a.score}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(value) => onScoreChange(p.key, toNumber(value, 0))}
-                  className="w-8 bg-transparent text-center text-xl font-bold text-white leading-none focus:outline-none"
+                  className="w-12 bg-transparent text-center text-xl font-bold text-white leading-none focus:outline-none"
                 />
               )}
               <span className="text-[10px] text-gray-400 mt-0.5">{p.short}</span>
