@@ -10,6 +10,28 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background: #09090b;
+  --sheet-page: #090909;
+  --sheet-surface: #111111;
+  --sheet-input: #0b0b0b;
+  --sheet-text: #f4f4f5;
+  --sheet-secondary: #d4d4d8;
+  --sheet-muted: #a1a1aa;
+  --sheet-border: #3f3a2c;
+  --sheet-accent: #d4af37;
+  --sheet-accent-hover: #f0cf65;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --sheet-page: #fffefa;
+  --sheet-surface: #ffffff;
+  --sheet-input: #fffefa;
+  --sheet-text: #292619;
+  --sheet-secondary: #514a38;
+  --sheet-muted: #766e5a;
+  --sheet-border: #ded2a8;
+  --sheet-accent: #9b7410;
+  --sheet-accent-hover: #765707;
 }
 
 html {
@@ -38,4 +60,72 @@ button {
 :focus-visible {
   outline: 2px solid #a1a1aa;
   outline-offset: 2px;
+}
+
+[data-theme] {
+  min-height: 100vh;
+  background-color: var(--sheet-page) !important;
+  color: var(--sheet-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-theme] .bg-black {
+  background-color: var(--sheet-page) !important;
+}
+
+[data-theme] [class*="bg-zinc-950"],
+[data-theme] [class*="bg-zinc-900"] {
+  background-color: var(--sheet-surface) !important;
+}
+
+[data-theme] [class*="border-zinc-"] {
+  border-color: var(--sheet-border) !important;
+}
+
+[data-theme] .text-gray-100,
+[data-theme] .text-gray-200,
+[data-theme] .text-gray-300,
+[data-theme] .text-gray-400 {
+  color: var(--sheet-text) !important;
+}
+
+[data-theme] .text-gray-500,
+[data-theme] .text-gray-600,
+[data-theme] .text-zinc-500,
+[data-theme] .text-zinc-600 {
+  color: var(--sheet-muted) !important;
+}
+
+[data-theme] .text-violet-300,
+[data-theme] .text-violet-400,
+[data-theme] .text-violet-500 {
+  color: var(--sheet-accent) !important;
+}
+
+[data-theme] .border-violet-500 {
+  border-color: var(--sheet-accent) !important;
+}
+
+[data-theme] [class*="hover:text-violet-"]:hover {
+  color: var(--sheet-accent-hover) !important;
+}
+
+[data-theme] [class*="focus:border-red-"]:focus,
+[data-theme] [class*="hover:border-red-"]:hover {
+  border-color: var(--sheet-accent) !important;
+}
+
+[data-theme="light"] .text-white,
+[data-theme="light"] [class*="text-white/"] {
+  color: var(--sheet-text) !important;
+}
+
+[data-theme="light"] [class*="bg-gradient-to-b"] {
+  background-image: none !important;
+  background-color: var(--sheet-surface) !important;
+}
+
+[data-numeric-input="true"] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
 }

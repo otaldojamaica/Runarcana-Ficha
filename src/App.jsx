@@ -13,6 +13,7 @@ import {
   Plus,
   X,
   Heart,
+  Camera,
   Sparkles,
   Footprints,
   Swords,
@@ -107,12 +108,12 @@ const defaultChar = () => ({
   caExtra: 0,
   caEscudo: 0,
   deslocamento: "9m",
-  hp: { cur: 10, max: 10, temp: 0 },
+  hp: { cur: 10, max: 10, temp: 0, color: "#b4232e" },
   hitDice: "1d8",
   deathSaves: { success: 0, fail: 0 },
   exhaustion: 0,
   xp: 0,
-  magia: { label: "Pontos de Mana", cur: 0, max: 0, attr: "int" },
+  magia: { label: "Pontos de Mana", cur: 0, max: 0, attr: "int", color: "#7c3aed" },
   resistencias: "",
   proficienciasArmas: "",
   linguas: "",
@@ -212,7 +213,7 @@ function downloadCharacter(char) {
 }
 
 function loadPreferences() {
-  const defaults = { tab: "Combate", locked: false };
+  const defaults = { tab: "Combate", locked: false, theme: "dark" };
   if (typeof document === "undefined") return defaults;
   try {
     const cookie = document.cookie
@@ -223,6 +224,7 @@ function loadPreferences() {
     return {
       tab: TABS.some((tab) => tab.name === saved.tab) ? saved.tab : defaults.tab,
       locked: typeof saved.locked === "boolean" ? saved.locked : defaults.locked,
+      theme: saved.theme === "light" ? "light" : defaults.theme,
     };
   } catch (error) {
     return defaults;
@@ -271,7 +273,7 @@ function HField({ label, value, onChange, type = "text" }) {
   );
 }
 
-function NumberInput({ value, onChange, className = "", onBlur, placeholder = "0", ...rest }) {
+function NumberInput({ value, onChange, className = "", onBlur, onFocus, placeholder = "0", ...rest }) {
   const inputRef = useRef(null);
   const normalizedValue = value == null || value === "" || Number(value) === 0 ? "" : String(value);
   const [draft, setDraft] = useState(normalizedValue);
@@ -283,12 +285,20 @@ function NumberInput({ value, onChange, className = "", onBlur, placeholder = "0
   return (
     <input
       ref={inputRef}
-      type="number"
+      type="text"
+      inputMode="decimal"
+      data-numeric-input="true"
       value={draft}
       placeholder={placeholder}
       onChange={(e) => {
-        setDraft(e.target.value);
-        onChange?.(e.target.value);
+        const nextValue = e.target.value;
+        if (!/^-?\d*\.?\d*$/.test(nextValue)) return;
+        setDraft(nextValue);
+        onChange?.(nextValue);
+      }}
+      onFocus={(e) => {
+        onFocus?.(e);
+        if (!normalizedValue) setDraft("");
       }}
       onBlur={(e) => {
         onBlur?.(e);
@@ -340,8 +350,10 @@ function StatBox({ label, children, icon: Icon, extra }) {
 
 /* ------------------------------ Status bar (Vida / Magia) ------------------------------ */
 
-function StatusBar({ label, icon: Icon, cur, max, from, to, editableLabel, onChange, onToggleLabel }) {
+function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, editableLabel, onChange, onToggleLabel }) {
+  const [colorOptionsOpen, setColorOptionsOpen] = useState(false);
   const pct = Math.max(0, Math.min(100, (cur / Math.max(1, max)) * 100));
+  const fallbackColor = editableLabel ? "#7c3aed" : "#b4232e";
   const step = (d) => onChange({ cur: Math.max(0, Math.min(max, cur + d)) });
   return (
     <div>
@@ -370,10 +382,10 @@ function StatusBar({ label, icon: Icon, cur, max, from, to, editableLabel, onCha
           <Label>{label}</Label>
         )}
       </div>
-      <div className={`relative h-10 rounded border border-zinc-800 overflow-hidden bg-gradient-to-b ${from}`}>
+      <div className="relative h-10 rounded border border-zinc-800 overflow-hidden bg-zinc-950">
         <div
-          className={`absolute inset-y-0 left-0 transition-all duration-300 bg-gradient-to-r ${to}`}
-          style={{ width: `${pct}%` }}
+          className="absolute inset-y-0 left-0 transition-all duration-300"
+          style={{ width: `${pct}%`, backgroundColor: color || fallbackColor }}
         />
         <div className="relative h-full flex items-center justify-between px-0.5">
           <div className="flex items-center h-full">
@@ -407,6 +419,30 @@ function StatusBar({ label, icon: Icon, cur, max, from, to, editableLabel, onCha
           </div>
         </div>
       </div>
+      <div className="mt-1 flex min-h-6 items-center justify-end gap-2">
+        {colorOptionsOpen && (
+          <label className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-zinc-500">
+            Cor da barra
+            <input
+              type="color"
+              value={color || fallbackColor}
+              onChange={(event) => onColorChange?.(event.target.value)}
+              aria-label={`Cor da barra de ${label}`}
+              className="h-6 w-8 cursor-pointer rounded border border-zinc-700 bg-transparent p-0.5"
+            />
+          </label>
+        )}
+        <button
+          type="button"
+          onClick={() => setColorOptionsOpen((open) => !open)}
+          aria-expanded={colorOptionsOpen}
+          aria-label={colorOptionsOpen ? `Ocultar cor de ${label}` : `Alterar cor de ${label}`}
+          title={colorOptionsOpen ? "Ocultar seletor de cor" : "Alterar cor da barra"}
+          className="text-zinc-500 hover:text-amber-400"
+        >
+          {colorOptionsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+      </div>
     </div>
   );
 }
@@ -423,15 +459,23 @@ function Portrait({ src, onChange }) {
     r.readAsDataURL(file);
   };
   return (
-    <div
-      className="w-16 h-16 shrink-0 rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden cursor-pointer flex items-center justify-center"
-      onClick={() => ref.current?.click()}
-    >
-      {src ? (
-        <img src={src} alt="Retrato" className="w-full h-full object-cover" />
-      ) : (
-        <User size={26} className="text-zinc-700" strokeWidth={1.3} />
-      )}
+    <div className="w-16 h-16 shrink-0">
+      <button
+        type="button"
+        onClick={() => ref.current?.click()}
+        title="Selecionar foto"
+        aria-label={src ? "Alterar foto do personagem" : "Selecionar foto do personagem"}
+        className="group relative flex h-full w-full items-center justify-center overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950"
+      >
+        {src ? (
+          <img src={src} alt="Retrato" className="h-full w-full object-cover" />
+        ) : (
+          <User size={26} className="text-zinc-700" strokeWidth={1.3} />
+        )}
+        <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center bg-black/55 text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          <Camera size={22} strokeWidth={1.8} />
+        </span>
+      </button>
       <input ref={ref} type="file" accept="image/*" className="hidden" onChange={handleFile} />
     </div>
   );
@@ -821,8 +865,10 @@ function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberFie
         icon={Heart}
         cur={char.hp.cur}
         max={char.hp.max}
+        color={char.hp.color}
         from="from-red-950/60 to-red-950/20"
         to="from-red-800 to-red-600"
+        onColorChange={(color) => updateChar((c) => ({ ...c, hp: { ...c.hp, color } }))}
         onChange={(patch) => updateChar((c) => ({ ...c, hp: { ...c.hp, ...patch } }))}
       />
 
@@ -901,6 +947,7 @@ function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberFie
         icon={Sparkles}
         cur={char.magia.cur}
         max={char.magia.max}
+        color={char.magia.color}
         from="from-violet-950/60 to-violet-950/20"
         to="from-violet-700 to-cyan-500"
         editableLabel
@@ -913,6 +960,7 @@ function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberFie
             },
           }))
         }
+        onColorChange={(color) => updateChar((c) => ({ ...c, magia: { ...c.magia, color } }))}
         onChange={(patch) => updateChar((c) => ({ ...c, magia: { ...c.magia, ...patch } }))}
       />
 
@@ -1502,7 +1550,7 @@ function RightPanel({
   );
 }
 
-function SettingsModal({ onClose, onExport, onImport, onReset }) {
+function SettingsModal({ onClose, onExport, onImport, onReset, theme, onThemeChange }) {
   const inputRef = useRef(null);
   const [error, setError] = useState("");
 
@@ -1537,6 +1585,27 @@ function SettingsModal({ onClose, onExport, onImport, onReset }) {
             <X size={16} />
           </button>
         </div>
+        <div className="mb-5">
+          <Label className="mb-2">Tema</Label>
+          <div role="group" aria-label="Tema do site" className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              aria-pressed={theme === "light"}
+              onClick={() => onThemeChange("light")}
+              className={`rounded border px-3 py-2 text-sm transition-colors ${theme === "light" ? "border-amber-500 text-amber-500" : "border-zinc-800 text-gray-400"}`}
+            >
+              Claro: branco e dourado
+            </button>
+            <button
+              type="button"
+              aria-pressed={theme === "dark"}
+              onClick={() => onThemeChange("dark")}
+              className={`rounded border px-3 py-2 text-sm transition-colors ${theme === "dark" ? "border-amber-500 text-amber-500" : "border-zinc-800 text-gray-400"}`}
+            >
+              Escuro: preto e dourado
+            </button>
+          </div>
+        </div>
         <div className="space-y-2">
           <button type="button" onClick={onExport} className="w-full rounded border border-zinc-800 px-3 py-2 text-left text-sm text-gray-200 hover:border-zinc-600">
             Exportar backup da ficha (.json)
@@ -1561,6 +1630,7 @@ export default function RunarcanaSheet() {
   const [roll, setRoll] = useState(null);
   const [preferences] = useState(loadPreferences);
   const [tab, setTab] = useState(preferences.tab);
+  const [theme, setTheme] = useState(preferences.theme);
   const [status, setStatus] = useState("loading");
   const [locked, setLocked] = useState(preferences.locked);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1568,8 +1638,8 @@ export default function RunarcanaSheet() {
   const firstLoad = useRef(true);
 
   useEffect(() => {
-    savePreferences({ tab, locked });
-  }, [tab, locked]);
+    savePreferences({ tab, locked, theme });
+  }, [tab, locked, theme]);
 
   useEffect(() => {
     let mounted = true;
@@ -1660,7 +1730,7 @@ export default function RunarcanaSheet() {
   const statusLabel = { loading: "Carregando…", saving: "Salvando…", saved: "Salvo", offline: "Alterações locais" }[status];
 
   return (
-    <div className="min-h-screen w-full bg-black text-gray-300 font-sans">
+    <div data-theme={theme} className="min-h-screen w-full bg-black text-gray-300 font-sans">
       <style>{`
         input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type=number] { -moz-appearance: textfield; }
@@ -1668,9 +1738,27 @@ export default function RunarcanaSheet() {
         ::-webkit-scrollbar { width: 7px; height: 7px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
+        :root { --sheet-page: #090909; --sheet-surface: #111111; --sheet-text: #f4f4f5; --sheet-muted: #a1a1aa; --sheet-border: #3f3a2c; --sheet-accent: #d4af37; --sheet-accent-hover: #f0cf65; }
+        [data-theme="light"] { color-scheme: light; --sheet-page: #fffefa; --sheet-surface: #ffffff; --sheet-text: #292619; --sheet-secondary: #514a38; --sheet-muted: #766e5a; --sheet-border: #ded2a8; --sheet-accent: #9b7410; --sheet-accent-hover: #765707; }
+        [data-theme] { min-height: 100vh; background-color: var(--sheet-page) !important; color: var(--sheet-secondary, #d4d4d8); font-variant-numeric: tabular-nums; }
+        [data-theme] .bg-black { background-color: var(--sheet-page) !important; }
+        [data-theme] [class*="bg-zinc-950"], [data-theme] [class*="bg-zinc-900"] { background-color: var(--sheet-surface) !important; }
+        [data-theme] [class*="border-zinc-"] { border-color: var(--sheet-border) !important; }
+        [data-theme] .text-gray-100, [data-theme] .text-gray-200, [data-theme] .text-gray-300, [data-theme] .text-gray-400 { color: var(--sheet-text) !important; }
+        [data-theme] .text-gray-500, [data-theme] .text-gray-600, [data-theme] .text-zinc-500, [data-theme] .text-zinc-600 { color: var(--sheet-muted) !important; }
+        [data-theme] .text-violet-300, [data-theme] .text-violet-400, [data-theme] .text-violet-500 { color: var(--sheet-accent) !important; }
+        [data-theme] .border-violet-500 { border-color: var(--sheet-accent) !important; }
+        [data-theme] [class*="hover:text-violet-"]:hover { color: var(--sheet-accent-hover) !important; }
+        [data-theme] [class*="focus:border-red-"]:focus, [data-theme] [class*="hover:border-red-"]:hover { border-color: var(--sheet-accent) !important; }
+        [data-theme="light"] .text-white, [data-theme="light"] [class*="text-white/"] { color: var(--sheet-text) !important; }
+        [data-theme="light"] [class*="bg-gradient-to-b"] { background-image: none !important; background-color: var(--sheet-surface) !important; }
+        input[type=number] { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
       `}</style>
 
-      <div className="h-[2px] w-full bg-gradient-to-r from-red-800 via-violet-700 to-red-800" />
+      <div
+        className="h-[2px] w-full"
+        style={{ background: "linear-gradient(90deg, transparent, var(--sheet-accent), transparent)" }}
+      />
 
       <HeaderPanel
         char={char}
@@ -1730,6 +1818,8 @@ export default function RunarcanaSheet() {
           onExport={() => downloadCharacter(char)}
           onImport={importCharacter}
           onReset={resetCharacter}
+          theme={theme}
+          onThemeChange={setTheme}
         />
       )}
     </div>
