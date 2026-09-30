@@ -213,7 +213,7 @@ function downloadCharacter(char) {
 }
 
 function loadPreferences() {
-  const defaults = { tab: "Combate", locked: false, theme: "dark" };
+  const defaults = { tab: "Combate", locked: false, theme: "light" };
   if (typeof document === "undefined") return defaults;
   try {
     const cookie = document.cookie
@@ -224,7 +224,7 @@ function loadPreferences() {
     return {
       tab: TABS.some((tab) => tab.name === saved.tab) ? saved.tab : defaults.tab,
       locked: typeof saved.locked === "boolean" ? saved.locked : defaults.locked,
-      theme: saved.theme === "light" ? "light" : defaults.theme,
+      theme: saved.theme === "light" || saved.theme === "dark" ? saved.theme : defaults.theme,
     };
   } catch (error) {
     return defaults;
@@ -273,7 +273,7 @@ function HField({ label, value, onChange, type = "text" }) {
   );
 }
 
-function NumberInput({ value, onChange, className = "", onBlur, onFocus, placeholder = "0", ...rest }) {
+function NumberInput({ value, onChange, className = "", onBlur, onFocus, placeholder = "0", maxLength = 2, ...rest }) {
   const inputRef = useRef(null);
   const normalizedValue = value == null || value === "" || Number(value) === 0 ? "" : String(value);
   const [draft, setDraft] = useState(normalizedValue);
@@ -288,12 +288,13 @@ function NumberInput({ value, onChange, className = "", onBlur, onFocus, placeho
       type="text"
       inputMode="decimal"
       data-numeric-input="true"
-      maxLength={3}
+      maxLength={maxLength}
       value={draft}
       placeholder={placeholder}
       onChange={(e) => {
-        const nextValue = e.target.value.slice(0, 3);
-        if (!/^-?\d*\.?\d*$/.test(nextValue)) return;
+        const typedValue = e.target.value.slice(0, maxLength);
+        const nextValue = typedValue.replace(/^(-?)0+(?=\d)/, "$1");
+        if (!/^-?\d*\.?\d*$/.test(typedValue)) return;
         setDraft(nextValue);
         onChange?.(nextValue);
       }}
@@ -385,9 +386,16 @@ function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, ed
           <Label>{label}</Label>
         )}
       </div>
-      <div className="relative h-10 rounded border border-zinc-800 overflow-hidden bg-zinc-950">
+      <div
+        className="status-bar-track relative h-10 rounded border border-zinc-800 overflow-hidden bg-zinc-950"
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={safeMax}
+        aria-valuenow={safeCur}
+      >
         <div
-          className="absolute inset-y-0 left-0 transition-all duration-300"
+          className={`status-bar-fill absolute inset-y-0 left-0 ${safeMax > 0 && pct <= 25 ? "is-low" : ""}`}
           style={{
             width: `${pct}%`,
             backgroundColor: color || fallbackColor,
@@ -396,16 +404,17 @@ function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, ed
         />
         <div className="relative h-full flex items-center justify-between px-0.5">
           <div className="flex items-center h-full">
-            <button type="button" onClick={() => step(-5)} aria-label={`Diminuir ${label} em 5`} title="Diminuir 5" className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(-5)} aria-label={`Diminuir ${label} atual em 5`} title="Diminuir 5" className="px-1 text-gray-500 hover:text-white">
               <ChevronsLeft size={14} />
             </button>
-            <button type="button" onClick={() => step(-1)} aria-label={`Diminuir ${label} em 1`} title="Diminuir 1" className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(-1)} aria-label={`Diminuir ${label} atual em 1`} title="Diminuir 1" className="px-1 text-gray-500 hover:text-white">
               <ChevronLeft size={14} />
             </button>
           </div>
           <div className="flex items-baseline gap-1">
             <NumberInput
               value={safeCur}
+              maxLength={3}
               onChange={(value) => onChange({ cur: Math.max(0, toNumber(value, 0)) })}
               onBlur={() => onChange({ cur: Math.max(0, Math.min(safeMax, toNumber(cur, 0))) })}
               className="w-10 bg-transparent text-center text-lg font-bold text-white focus:outline-none [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]"
@@ -413,16 +422,17 @@ function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, ed
             <span className="text-white/50">/</span>
             <NumberInput
               value={safeMax}
+              maxLength={3}
               onChange={(value) => onChange({ max: Math.max(0, toNumber(value, 0)) })}
               onBlur={() => onChange({ max: Math.max(0, toNumber(max, 0)), cur: Math.min(safeCur, Math.max(0, toNumber(max, 0))) })}
               className="w-10 bg-transparent text-center text-sm text-white/70 focus:outline-none"
             />
           </div>
           <div className="flex items-center h-full">
-            <button type="button" onClick={() => step(1)} aria-label={`Aumentar ${label} em 1`} title="Aumentar 1" className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(1)} aria-label={`Aumentar ${label} atual em 1`} title="Aumentar 1" className="px-1 text-gray-500 hover:text-white">
               <ChevronRight size={14} />
             </button>
-            <button type="button" onClick={() => step(5)} aria-label={`Aumentar ${label} em 5`} title="Aumentar 5" className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(5)} aria-label={`Aumentar ${label} atual em 5`} title="Aumentar 5" className="px-1 text-gray-500 hover:text-white">
               <ChevronsRight size={14} />
             </button>
           </div>
@@ -1740,29 +1750,6 @@ export default function RunarcanaSheet() {
 
   return (
     <div data-theme={theme} className="min-h-screen w-full bg-black text-gray-300 font-sans">
-      <style>{`
-        input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-        input[type=number] { -moz-appearance: textfield; }
-        ::selection { background: #7f1d1d99; }
-        ::-webkit-scrollbar { width: 7px; height: 7px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
-        :root { --sheet-page: #090909; --sheet-surface: #111111; --sheet-text: #f4f4f5; --sheet-muted: #a1a1aa; --sheet-border: #3f3a2c; --sheet-accent: #d4af37; --sheet-accent-hover: #f0cf65; }
-        [data-theme="light"] { color-scheme: light; --sheet-page: #fffefa; --sheet-surface: #ffffff; --sheet-text: #292619; --sheet-secondary: #514a38; --sheet-muted: #766e5a; --sheet-border: #ded2a8; --sheet-accent: #9b7410; --sheet-accent-hover: #765707; }
-        [data-theme] { min-height: 100vh; background-color: var(--sheet-page) !important; color: var(--sheet-secondary, #d4d4d8); font-variant-numeric: tabular-nums; }
-        [data-theme] .bg-black { background-color: var(--sheet-page) !important; }
-        [data-theme] [class*="bg-zinc-950"], [data-theme] [class*="bg-zinc-900"] { background-color: var(--sheet-surface) !important; }
-        [data-theme] [class*="border-zinc-"] { border-color: var(--sheet-border) !important; }
-        [data-theme] .text-gray-100, [data-theme] .text-gray-200, [data-theme] .text-gray-300, [data-theme] .text-gray-400 { color: var(--sheet-text) !important; }
-        [data-theme] .text-gray-500, [data-theme] .text-gray-600, [data-theme] .text-zinc-500, [data-theme] .text-zinc-600 { color: var(--sheet-muted) !important; }
-        [data-theme] .text-violet-300, [data-theme] .text-violet-400, [data-theme] .text-violet-500 { color: var(--sheet-accent) !important; }
-        [data-theme] .border-violet-500 { border-color: var(--sheet-accent) !important; }
-        [data-theme] [class*="hover:text-violet-"]:hover { color: var(--sheet-accent-hover) !important; }
-        [data-theme] [class*="focus:border-red-"]:focus, [data-theme] [class*="hover:border-red-"]:hover { border-color: var(--sheet-accent) !important; }
-        [data-theme="light"] .text-white, [data-theme="light"] [class*="text-white/"] { color: var(--sheet-text) !important; }
-        [data-theme="light"] [class*="bg-gradient-to-b"] { background-image: none !important; background-color: var(--sheet-surface) !important; }
-        input[type=number] { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
-      `}</style>
 
       <div
         className="h-[2px] w-full"
