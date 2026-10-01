@@ -141,6 +141,7 @@ const parseModifier = (value = "0") => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 const uid = () => Math.random().toString(36).slice(2, 9);
+const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 function secureRoll(die) {
   if (window.crypto && window.crypto.getRandomValues) {
@@ -179,23 +180,38 @@ function saveChar(data) {
 function restoreCharacter(data) {
   const defaults = defaultChar();
   const saved = data?.character ?? data;
-  if (!saved || typeof saved !== "object" || Array.isArray(saved)) {
+  if (!isRecord(saved)) {
     throw new Error("Arquivo de ficha inválido.");
   }
+  const savedAttrs = isRecord(saved.attrs) ? saved.attrs : {};
+  const attrs = Object.fromEntries(
+    ATTRS.map(({ key }) => [key, { ...defaults.attrs[key], ...(isRecord(savedAttrs[key]) ? savedAttrs[key] : {}) }]),
+  );
+  const savedMagia = isRecord(saved.magia) ? saved.magia : {};
+  const magia = {
+    ...defaults.magia,
+    ...savedMagia,
+    attr: ["int", "sab", "car"].includes(savedMagia.attr) ? savedMagia.attr : defaults.magia.attr,
+  };
   return {
     ...defaults,
     ...saved,
     header: { ...defaults.header, ...(saved.header || {}) },
-    attrs: { ...defaults.attrs, ...(saved.attrs || {}) },
+    attrs,
     hp: { ...defaults.hp, ...(saved.hp || {}) },
-    magia: { ...defaults.magia, ...(saved.magia || {}) },
+    magia,
     moedas: { ...defaults.moedas, ...(saved.moedas || {}) },
     deathSaves: { ...defaults.deathSaves, ...(saved.deathSaves || {}) },
     extras: { ...defaults.extras, ...(saved.extras || {}) },
-    attacks: Array.isArray(saved.attacks) ? saved.attacks : defaults.attacks,
-    habilidades: Array.isArray(saved.habilidades) ? saved.habilidades : defaults.habilidades,
-    magias: Array.isArray(saved.magias) ? saved.magias : defaults.magias,
-    inventario: Array.isArray(saved.inventario) ? saved.inventario : defaults.inventario,
+    savesTreino: isRecord(saved.savesTreino) ? saved.savesTreino : defaults.savesTreino,
+    skillsTreino: isRecord(saved.skillsTreino) ? saved.skillsTreino : defaults.skillsTreino,
+    skillsOutros: isRecord(saved.skillsOutros) ? saved.skillsOutros : defaults.skillsOutros,
+    attacks: Array.isArray(saved.attacks) ? saved.attacks.filter(isRecord) : defaults.attacks,
+    habilidades: Array.isArray(saved.habilidades) ? saved.habilidades.filter(isRecord) : defaults.habilidades,
+    magias: Array.isArray(saved.magias) ? saved.magias.filter(isRecord) : defaults.magias,
+    inventario: Array.isArray(saved.inventario) ? saved.inventario.filter(isRecord) : defaults.inventario,
+    attackFilter: typeof saved.attackFilter === "string" ? saved.attackFilter : defaults.attackFilter,
+    freeRoll: typeof saved.freeRoll === "string" ? saved.freeRoll : defaults.freeRoll,
     runas: typeof saved.runas === "string" ? saved.runas : defaults.runas,
   };
 }
@@ -1669,7 +1685,7 @@ export default function RunarcanaSheet() {
       setStatus("ready");
     })().catch(() => {
       if (mounted) setStatus("offline");
-    })();
+    });
     return () => {
       mounted = false;
     };
