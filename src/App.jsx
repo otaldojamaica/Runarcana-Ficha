@@ -65,6 +65,16 @@ const SKILLS = [
   { name: "Tecnologia", attr: "int" },
 ];
 
+const DAMAGE_TYPE_GROUPS = [
+  { label: "Físico", options: ["Contundente", "Cortante", "Perfurante"] },
+  { label: "Físico Mágico", options: ["Esmagador (Contundente)", "Lacerante (Cortante)", "Incisivo (Perfurante)"] },
+  {
+    label: "Elemental",
+    options: ["Ácido", "Elétrico", "Energético", "Ígneo", "Gélido", "Necrótico", "Radiante", "Trovejante", "Venenoso", "Psíquico"],
+  },
+];
+const DAMAGE_TYPES = new Set(DAMAGE_TYPE_GROUPS.flatMap((group) => group.options));
+
 const TABS = [
   { name: "Combate", icon: Swords },
   { name: "Magias/Runas", icon: Wand2 },
@@ -120,7 +130,21 @@ const defaultChar = () => ({
   moedas: { pp: 0, pe: 0, po: 0, pl: 0 },
   attackFilter: "",
   freeRoll: "",
-  attacks: [{ id: "a1", nome: "Adaga Rúnica", bonus: "+3", dano: "1d4 + 1", tipo: "Perfurante", open: true }],
+  attacks: [{
+    id: "a1",
+    nome: "Adaga Rúnica",
+    dano: "1d4 + 1",
+    critico: 20,
+    multiplicador: "x2",
+    ataqueBonus: 1,
+    tipoDano: "Perfurante",
+    alcance: "Corpo a corpo",
+    pericia: "",
+    atributo: "des",
+    danoExtra: [],
+    imagem: null,
+    anotacoes: "",
+  }],
   habilidades: [{ id: "h1", nome: "", desc: "" }],
   magias: [{ id: "m1", nome: "", custo: "", desc: "" }],
   runas: "",
@@ -140,11 +164,43 @@ const parseModifier = (value = "0") => {
   const parsed = Number(String(value).replace(/[^-\d]/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
 };
+const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const uid = () => {
   const bytes = new Uint8Array(16);
   globalThis.crypto.getRandomValues(bytes);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
+
+function migrateAttack(value, legacyProf, attrs) {
+  const saved = isRecord(value) ? value : {};
+  const atributo = ATTRS.some(({ key }) => key === saved.atributo) ? saved.atributo : "des";
+  const ataqueBonus = Object.prototype.hasOwnProperty.call(saved, "ataqueBonus")
+    ? toNumber(saved.ataqueBonus, 0)
+    : saved.bonus !== undefined
+      ? parseModifier(saved.bonus) - legacyProf - mod(attrs[atributo]?.score)
+      : 0;
+  const savedDamageType = saved.tipoDano ?? saved.tipo;
+  return {
+    id: typeof saved.id === "string" && saved.id ? saved.id : uid(),
+    nome: typeof saved.nome === "string" ? saved.nome : "",
+    dano: typeof saved.dano === "string" && saved.dano ? saved.dano : "1d6",
+    critico: Math.min(20, Math.max(1, Math.round(toNumber(saved.critico, 20)))),
+    multiplicador: typeof saved.multiplicador === "string" && saved.multiplicador ? saved.multiplicador : "x2",
+    ataqueBonus,
+    tipoDano: DAMAGE_TYPES.has(savedDamageType) ? savedDamageType : "Cortante",
+    alcance: typeof saved.alcance === "string" ? saved.alcance : "",
+    pericia: typeof saved.pericia === "string" ? saved.pericia : "",
+    atributo,
+    danoExtra: Array.isArray(saved.danoExtra)
+      ? saved.danoExtra.filter(isRecord).map((extra) => ({
+          formula: typeof extra.formula === "string" ? extra.formula : "",
+          tipoDano: DAMAGE_TYPES.has(extra.tipoDano) ? extra.tipoDano : "Cortante",
+        }))
+      : [],
+    imagem: typeof saved.imagem === "string" ? saved.imagem : null,
+    anotacoes: typeof saved.anotacoes === "string" ? saved.anotacoes : "",
+  };
+}
 
 function secureRoll(die) {
   if (!Number.isInteger(die) || die < 2) throw new Error("O dado precisa ter pelo menos dois lados.");
@@ -201,6 +257,7 @@ function restoreCharacter(data) {
     label: typeof savedMagia.label === "string" ? savedMagia.label : defaults.magia.label,
     attr: ["int", "sab", "car"].includes(savedMagia.attr) ? savedMagia.attr : defaults.magia.attr,
   };
+  const legacyProf = profBonus(savedHeader.nivel ?? defaults.header.nivel) + toNumber(savedExtras.prof, 0);
   return {
     ...defaults,
     ...saved,
@@ -214,7 +271,9 @@ function restoreCharacter(data) {
     savesTreino: record(saved.savesTreino),
     skillsTreino: record(saved.skillsTreino),
     skillsOutros: record(saved.skillsOutros),
-    attacks: Array.isArray(saved.attacks) ? saved.attacks.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.attacks,
+    attacks: Array.isArray(saved.attacks)
+      ? saved.attacks.filter(isRecord).map((attack) => migrateAttack(attack, legacyProf, attrs))
+      : defaults.attacks,
     habilidades: Array.isArray(saved.habilidades) ? saved.habilidades.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.habilidades,
     magias: Array.isArray(saved.magias) ? saved.magias.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.magias,
     inventario: Array.isArray(saved.inventario) ? saved.inventario.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.inventario,
@@ -376,13 +435,25 @@ function StatBox({ label, children, icon: Icon, extra }) {
 
 /* ------------------------------ Status bar (Vida / Magia) ------------------------------ */
 
-function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, editableLabel, onChange, onToggleLabel }) {
+function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, editableLabel, staticFill = false, allowOverflow = false, overflowLabel = "acima do máximo", numberColor, defaultNumberColor, onNumberColorChange, onChange, onToggleLabel }) {
   const [colorOptionsOpen, setColorOptionsOpen] = useState(false);
+  const [numberColorOptionsOpen, setNumberColorOptionsOpen] = useState(false);
   const safeMax = Math.max(0, toNumber(max, 0));
-  const safeCur = Math.max(0, Math.min(safeMax, toNumber(cur, 0)));
+  const rawCur = Math.max(0, toNumber(cur, 0));
+  const safeCur = allowOverflow ? rawCur : Math.min(safeMax, rawCur);
+  const meterCur = Math.min(safeCur, safeMax);
   const pct = safeMax === 0 ? 0 : Math.max(0, Math.min(100, (safeCur / safeMax) * 100));
   const fallbackColor = editableLabel ? "#7c3aed" : "#b4232e";
-  const step = (amount) => onChange({ cur: Math.max(0, Math.min(safeMax, safeCur + amount)) });
+  const safeNumberColor = /^#[\da-f]{6}$/i.test(numberColor || "") ? numberColor : defaultNumberColor;
+  const step = (amount) => {
+    const nextCur = Math.max(0, safeCur + amount);
+    const nextMax = safeMax === 0 && editableLabel && amount > 0 ? nextCur : safeMax;
+    if (allowOverflow) {
+      onChange({ cur: nextCur, ...(nextMax > safeMax ? { max: nextMax } : {}) });
+      return;
+    }
+    onChange({ cur: Math.min(nextCur, nextMax), ...(nextMax > safeMax ? { max: nextMax } : {}) });
+  };
   return (
     <div>
       <div className="flex items-center justify-center gap-1.5 mb-1">
@@ -416,10 +487,11 @@ function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, ed
         aria-label={label}
         aria-valuemin={0}
         aria-valuemax={safeMax}
-        aria-valuenow={safeCur}
+        aria-valuenow={meterCur}
+        aria-valuetext={`${safeCur} / ${safeMax}${allowOverflow && safeCur > safeMax ? `, ${overflowLabel}` : ""}`}
       >
         <div
-          className={`status-bar-fill absolute inset-y-0 left-0 ${safeMax > 0 && pct <= 25 ? "is-low" : ""}`}
+          className={`status-bar-fill absolute inset-y-0 left-0 ${staticFill ? "is-static" : ""} ${safeMax > 0 && pct <= 25 ? "is-low" : ""}`}
           style={{
             width: `${pct}%`,
             backgroundColor: color || fallbackColor,
@@ -428,7 +500,7 @@ function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, ed
         />
         <div className="relative h-full flex items-center justify-between px-0.5">
           <div className="flex items-center h-full">
-            <button type="button" onClick={() => step(-5)} aria-label={`Diminuir ${label} atual em 5`} title="Diminuir 5" className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(-2)} aria-label={`Diminuir ${label} atual em 2`} title="Diminuir 2" className="px-1 text-gray-500 hover:text-white">
               <ChevronsLeft size={14} />
             </button>
             <button type="button" onClick={() => step(-1)} aria-label={`Diminuir ${label} atual em 1`} title="Diminuir 1" className="px-1 text-gray-500 hover:text-white">
@@ -440,51 +512,79 @@ function StatusBar({ label, icon: Icon, cur, max, from, color, onColorChange, ed
               value={safeCur}
               maxLength={3}
               onChange={(value) => onChange({ cur: Math.max(0, toNumber(value, 0)) })}
-              onBlur={() => onChange({ cur: Math.max(0, Math.min(safeMax, toNumber(cur, 0))) })}
-              className="w-10 bg-transparent text-center text-lg font-bold text-white focus:outline-none [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]"
+              onBlur={() => onChange({ cur: allowOverflow ? Math.max(0, toNumber(cur, 0)) : Math.max(0, Math.min(safeMax, toNumber(cur, 0))) })}
+              className="status-bar-number w-10 bg-transparent text-center text-lg font-bold focus:outline-none [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]"
+              style={{ color: numberColor || undefined }}
             />
             <span className="text-white/50">/</span>
             <NumberInput
               value={safeMax}
               maxLength={3}
               onChange={(value) => onChange({ max: Math.max(0, toNumber(value, 0)) })}
-              onBlur={() => onChange({ max: Math.max(0, toNumber(max, 0)), cur: Math.min(safeCur, Math.max(0, toNumber(max, 0))) })}
-              className="w-10 bg-transparent text-center text-sm text-white/70 focus:outline-none"
+              onBlur={() => onChange({ max: Math.max(0, toNumber(max, 0)), cur: allowOverflow ? safeCur : Math.min(safeCur, Math.max(0, toNumber(max, 0))) })}
+              className="status-bar-number w-10 bg-transparent text-center text-sm focus:outline-none"
+              style={{ color: numberColor || undefined }}
             />
           </div>
           <div className="flex items-center h-full">
             <button type="button" onClick={() => step(1)} aria-label={`Aumentar ${label} atual em 1`} title="Aumentar 1" className="px-1 text-gray-500 hover:text-white">
               <ChevronRight size={14} />
             </button>
-            <button type="button" onClick={() => step(5)} aria-label={`Aumentar ${label} atual em 5`} title="Aumentar 5" className="px-1 text-gray-500 hover:text-white">
+            <button type="button" onClick={() => step(2)} aria-label={`Aumentar ${label} atual em 2`} title="Aumentar 2" className="px-1 text-gray-500 hover:text-white">
               <ChevronsRight size={14} />
             </button>
           </div>
         </div>
       </div>
-      <div className="mt-1 flex min-h-6 items-center justify-end gap-2">
-        {colorOptionsOpen && (
-          <label className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-zinc-500">
-            Cor da barra
-            <input
-              type="color"
-              value={color || fallbackColor}
-              onChange={(event) => onColorChange?.(event.target.value)}
-              aria-label={`Cor da barra de ${label}`}
-              className="h-6 w-8 cursor-pointer rounded border border-zinc-700 bg-transparent p-0.5"
-            />
-          </label>
-        )}
-        <button
-          type="button"
-          onClick={() => setColorOptionsOpen((open) => !open)}
-          aria-expanded={colorOptionsOpen}
-          aria-label={colorOptionsOpen ? `Ocultar cor de ${label}` : `Alterar cor de ${label}`}
-          title={colorOptionsOpen ? "Ocultar seletor de cor" : "Alterar cor da barra"}
-          className="text-zinc-500 hover:text-amber-400"
-        >
-          {colorOptionsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        </button>
+      <div className="mt-1 flex min-h-6 items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {numberColorOptionsOpen && (
+            <label className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-zinc-500">
+              Cor dos números
+              <input
+                type="color"
+                value={safeNumberColor || "#ffffff"}
+                onChange={(event) => onNumberColorChange?.(event.target.value)}
+                aria-label={`Cor dos números de ${label}`}
+                className="h-6 w-8 cursor-pointer rounded border border-zinc-700 bg-transparent p-0.5"
+              />
+            </label>
+          )}
+          <button
+            type="button"
+            onClick={() => setNumberColorOptionsOpen((open) => !open)}
+            aria-expanded={numberColorOptionsOpen}
+            aria-label={numberColorOptionsOpen ? `Ocultar cor dos números de ${label}` : `Alterar cor dos números de ${label}`}
+            title={numberColorOptionsOpen ? "Ocultar cor dos números" : "Alterar cor dos números"}
+            className="text-zinc-500 hover:text-amber-400"
+          >
+            {numberColorOptionsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          {colorOptionsOpen && (
+            <label className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-zinc-500">
+              Cor da barra
+              <input
+                type="color"
+                value={color || fallbackColor}
+                onChange={(event) => onColorChange?.(event.target.value)}
+                aria-label={`Cor da barra de ${label}`}
+                className="h-6 w-8 cursor-pointer rounded border border-zinc-700 bg-transparent p-0.5"
+              />
+            </label>
+          )}
+          <button
+            type="button"
+            onClick={() => setColorOptionsOpen((open) => !open)}
+            aria-expanded={colorOptionsOpen}
+            aria-label={colorOptionsOpen ? `Ocultar cor de ${label}` : `Alterar cor de ${label}`}
+            title={colorOptionsOpen ? "Ocultar seletor de cor" : "Alterar cor da barra"}
+            className="text-zinc-500 hover:text-amber-400"
+          >
+            {colorOptionsOpen ? <ChevronDown size={13} /> : <ChevronLeft size={13} />}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -537,7 +637,7 @@ function AttrHex({ attrs, locked, onToggleLock, onScoreChange, onRoll }) {
   });
 
   return (
-    <div className="relative mx-auto flex items-center justify-center" style={{ width: 228, height: 228 }}>
+    <div className="relative mx-auto flex items-center justify-center" style={{ width: 228, height: 246 }}>
       <button
         onClick={onToggleLock}
         className="absolute top-0 right-4 text-gray-600 hover:text-violet-400 transition-colors z-10"
@@ -546,7 +646,7 @@ function AttrHex({ attrs, locked, onToggleLock, onScoreChange, onRoll }) {
         {locked ? <Lock size={13} /> : <Unlock size={13} />}
       </button>
 
-      <svg viewBox="0 0 228 228" width="228" height="228" className="absolute inset-0">
+      <svg viewBox="0 0 228 228" width="228" height="228" className="absolute left-0 top-0">
         <circle cx={cx} cy={cy} r={R + 28} fill="none" stroke="#18181b" strokeWidth="1" strokeDasharray="1 5" />
         <polygon
           points={pos.map((p) => `${p.x},${p.y}`).join(" ")}
@@ -700,54 +800,220 @@ function EditableList({ items, fields, onChange, addLabel = "Adicionar" }) {
   );
 }
 
-/* --------------------------------- Weapon card --------------------------------- */
-
-function WeaponCard({ atk, onChange, onRemove, onRoll }) {
+function DamageTypeSelect({ value, onChange, label }) {
   return (
-    <div className="bg-zinc-900/40 rounded-lg px-3 py-2.5 mb-2 border border-zinc-800/60">
+    <select
+      value={value}
+      aria-label={label}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full min-w-0 rounded border border-zinc-800 bg-zinc-950 px-2.5 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none"
+    >
+      {DAMAGE_TYPE_GROUPS.map((group) => (
+        <optgroup key={group.label} label={group.label}>
+          {group.options.map((type) => <option key={type} value={type}>{type}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+
+function formatAttackNotes(notes) {
+  const parts = String(notes || "").split(/(\*\*[\s\S]+?\*\*|\*[\s\S]+?\*|__[\s\S]+?__)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index} className="font-semibold text-amber-500">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("*") && part.endsWith("*")) return <em key={index}>{part.slice(1, -1)}</em>;
+    if (part.startsWith("__") && part.endsWith("__")) return <u key={index}>{part.slice(2, -2)}</u>;
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
+}
+
+function AttackEditorModal({ attack, isEditing, onClose, onSave }) {
+  const [draft, setDraft] = useState(() => ({ ...attack, danoExtra: attack.danoExtra.map((extra) => ({ ...extra })) }));
+  const [error, setError] = useState("");
+  const notesRef = useRef(null);
+  const update = (patch) => setDraft((current) => ({ ...current, ...patch }));
+  const updateExtra = (index, patch) =>
+    update({ danoExtra: draft.danoExtra.map((extra, itemIndex) => itemIndex === index ? { ...extra, ...patch } : extra) });
+  const formatSelection = (before, after = before) => {
+    const field = notesRef.current;
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const selected = draft.anotacoes.slice(start, end);
+    const content = selected || "texto";
+    const replacement = `${before}${content}${after}`;
+    update({ anotacoes: `${draft.anotacoes.slice(0, start)}${replacement}${draft.anotacoes.slice(end)}` });
+    requestAnimationFrame(() => {
+      field.focus();
+      field.setSelectionRange(start + before.length, start + before.length + content.length);
+    });
+  };
+  const save = (event) => {
+    event.preventDefault();
+    if (!draft.nome.trim() || !draft.dano.trim() || !draft.multiplicador.trim()) {
+      setError("Preencha nome, dano e multiplicador para salvar o ataque.");
+      return;
+    }
+    onSave({ ...draft, nome: draft.nome.trim(), critico: Math.min(20, Math.max(1, toNumber(draft.critico, 20))) });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-6" onClick={(event) => event.target === event.currentTarget && onClose()}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="attack-editor-title"
+        className="w-full max-w-3xl max-h-[92dvh] overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-4 text-gray-200 shadow-2xl sm:p-6"
+      >
+        <form onSubmit={save}>
+          <header className="mb-5 flex items-center justify-between border-b border-zinc-800 pb-3">
+            <h2 id="attack-editor-title" className="text-sm font-semibold uppercase tracking-[0.12em] text-gray-100">
+              {isEditing ? "Editar Ataque" : "Novo Ataque"}
+            </h2>
+            <button type="button" onClick={onClose} aria-label="Fechar editor de ataque" className="text-gray-500 hover:text-white">
+              <X size={18} />
+            </button>
+          </header>
+
+          <div className="space-y-4">
+            <label className="block space-y-1.5 text-xs text-amber-500">
+              <span>Nome*</span>
+              <input required autoFocus value={draft.nome} onChange={(event) => update({ nome: event.target.value })} placeholder="Ex.: Cajado" className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 placeholder:text-zinc-500 focus:border-amber-500 focus:outline-none" />
+            </label>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Dano*</span><input required value={draft.dano} onChange={(event) => update({ dano: event.target.value })} placeholder="1d6" className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none" /></label>
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Crítico*</span><input required type="number" min="1" max="20" value={draft.critico} onChange={(event) => update({ critico: toNumber(event.target.value, 20) })} className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none" /></label>
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Multiplicador*</span><input required value={draft.multiplicador} onChange={(event) => update({ multiplicador: event.target.value })} placeholder="x2" className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none" /></label>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Ataque Bônus</span><input type="number" value={draft.ataqueBonus} onChange={(event) => update({ ataqueBonus: toNumber(event.target.value, 0) })} className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none" /></label>
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Tipo de Dano</span><DamageTypeSelect label="Tipo de Dano" value={draft.tipoDano} onChange={(tipoDano) => update({ tipoDano })} /></label>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Alcance</span><input value={draft.alcance} onChange={(event) => update({ alcance: event.target.value })} placeholder="Corpo a corpo ou 18m" className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none" /></label>
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Perícia (opcional)</span><input list="runarcana-attack-skills" value={draft.pericia} onChange={(event) => update({ pericia: event.target.value })} placeholder="Selecione ou digite" className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none" /><datalist id="runarcana-attack-skills">{SKILLS.map((skill) => <option key={skill.name} value={skill.name} />)}</datalist></label>
+              <label className="space-y-1.5 text-xs text-amber-500"><span>Atributo</span><select value={draft.atributo} onChange={(event) => update({ atributo: event.target.value })} className="w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none">{ATTRS.map((attr) => <option key={attr.key} value={attr.key}>{attr.short} — {attr.label}</option>)}</select></label>
+            </div>
+
+            <section className="space-y-2 rounded border border-zinc-800 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-500">Dano extra</h3>
+                <button type="button" onClick={() => update({ danoExtra: [...draft.danoExtra, { formula: "", tipoDano: "Cortante" }] })} className="flex items-center gap-1 text-xs text-amber-500 hover:text-amber-300"><Plus size={13} /> Adicionar</button>
+              </div>
+              {draft.danoExtra.length === 0 && <p className="text-xs text-zinc-500">Nenhum dano extra.</p>}
+              {draft.danoExtra.map((extra, index) => (
+                <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_32px] items-end gap-2">
+                  <label className="space-y-1 text-[11px] text-gray-400"><span>Fórmula</span><input value={extra.formula} onChange={(event) => updateExtra(index, { formula: event.target.value })} placeholder="1d6" className="w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-2 text-sm text-gray-200 focus:border-amber-500 focus:outline-none" /></label>
+                  <label className="space-y-1 text-[11px] text-gray-400"><span>Tipo de Dano</span><DamageTypeSelect label={`Tipo do dano extra ${index + 1}`} value={extra.tipoDano} onChange={(tipoDano) => updateExtra(index, { tipoDano })} /></label>
+                  <button type="button" onClick={() => update({ danoExtra: draft.danoExtra.filter((_, itemIndex) => itemIndex !== index) })} aria-label={`Remover dano extra ${index + 1}`} className="mb-0.5 flex h-9 items-center justify-center text-gray-500 hover:text-red-400"><X size={15} /></button>
+                </div>
+              ))}
+            </section>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[auto_minmax(0,1fr)]">
+              <div className="space-y-2">
+                <span className="block text-xs text-amber-500">Imagem</span>
+                <Portrait src={draft.imagem} onChange={(imagem) => update({ imagem })} />
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="attack-notes" className="block text-xs text-amber-500">Anotações</label>
+                <div className="flex items-center gap-1 rounded-t border border-zinc-800 bg-zinc-900/50 p-1">
+                  <button type="button" onClick={() => formatSelection("**")} aria-label="Negrito dourado" title="Negrito dourado" className="min-w-8 rounded px-2 py-1 text-xs font-bold text-amber-500 hover:bg-zinc-800">B</button>
+                  <button type="button" onClick={() => formatSelection("*", "*")} aria-label="Itálico" title="Itálico" className="min-w-8 rounded px-2 py-1 text-xs italic text-gray-300 hover:bg-zinc-800">I</button>
+                  <button type="button" onClick={() => formatSelection("__", "__")} aria-label="Sublinhado" title="Sublinhado" className="min-w-8 rounded px-2 py-1 text-xs text-gray-300 underline hover:bg-zinc-800">U</button>
+                </div>
+                <textarea id="attack-notes" ref={notesRef} rows={4} value={draft.anotacoes} onChange={(event) => update({ anotacoes: event.target.value })} placeholder="Detalhes do ataque" className="w-full resize-y rounded-b border border-t-0 border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-gray-200 placeholder:text-zinc-500 focus:border-amber-500 focus:outline-none" />
+              </div>
+            </div>
+            {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+          </div>
+
+          <footer className="mt-6 flex justify-end gap-2 border-t border-zinc-800 pt-4">
+            <button type="button" onClick={onClose} className="rounded border border-zinc-700 px-4 py-2 text-sm text-gray-300 hover:bg-zinc-900">Cancelar</button>
+            <button type="submit" className="rounded bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400">{isEditing ? "Salvar" : "Adicionar"}</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function AttackCard({ attack, expanded, bonus, onToggle, onEdit, onRemove, onRoll }) {
+  const attribute = ATTRS.find(({ key }) => key === attack.atributo) || ATTRS[0];
+  const handleKeyDown = (event) => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    onEdit();
+  };
+
+  return (
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={onEdit}
+      onKeyDown={handleKeyDown}
+      aria-label={`Editar ataque ${attack.nome || "sem nome"}`}
+      className="mb-2 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2.5 outline-none transition-colors hover:border-amber-500/50 focus-visible:border-amber-500"
+    >
       <div className="flex items-center gap-2">
-        <button onClick={() => onChange({ ...atk, open: !atk.open })} className="text-gray-600 shrink-0">
-          {atk.open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <button type="button" onClick={(event) => { event.stopPropagation(); onToggle(); }} aria-label={`${expanded ? "Recolher" : "Expandir"} ${attack.nome}`} className="shrink-0 text-amber-500">
+          {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
-        <input
-          value={atk.nome}
-          onChange={(e) => onChange({ ...atk, nome: e.target.value })}
-          placeholder="Nome da arma"
-          className="bg-transparent text-sm font-medium text-gray-100 flex-1 focus:outline-none"
-        />
-        <RollIcon onClick={onRoll} />
-        <button onClick={onRemove} className="text-zinc-700 hover:text-red-500">
-          <X size={13} />
-        </button>
-      </div>
-      {atk.open && (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 mt-2.5 pl-5 text-xs">
-          <div className="flex items-center gap-1.5">
-            <span className="text-violet-400">Bônus:</span>
-            <input
-              value={atk.bonus}
-              onChange={(e) => onChange({ ...atk, bonus: e.target.value })}
-              className="bg-transparent text-gray-200 w-12 focus:outline-none border-b border-zinc-800 focus:border-red-700"
-            />
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-violet-400">Dano:</span>
-            <input
-              value={atk.dano}
-              onChange={(e) => onChange({ ...atk, dano: e.target.value })}
-              className="bg-transparent text-gray-200 w-20 focus:outline-none border-b border-zinc-800 focus:border-red-700"
-            />
-          </div>
-          <div className="flex items-center gap-1.5 flex-1 min-w-[110px]">
-            <span className="text-violet-400">Tipo:</span>
-            <input
-              value={atk.tipo}
-              onChange={(e) => onChange({ ...atk, tipo: e.target.value })}
-              className="bg-transparent text-gray-200 flex-1 focus:outline-none border-b border-zinc-800 focus:border-red-700"
-            />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold text-gray-100">{attack.nome || "Ataque sem nome"}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-amber-500">
+            <span>Dano: {attack.dano}</span>
+            <span>Crítico: {attack.critico}/{attack.multiplicador}</span>
+            <span className="text-gray-500">{attack.tipoDano}</span>
+            {attack.danoExtra.map((extra, index) => <span key={index} className="rounded border border-amber-500/30 px-1.5 py-0.5">+ {extra.formula} {extra.tipoDano}</span>)}
           </div>
         </div>
+        <span className="shrink-0 text-sm font-semibold text-amber-500">{fmtMod(bonus)}</span>
+        <button type="button" onClick={(event) => { event.stopPropagation(); onRoll(); }} aria-label={`Rolar ataque ${attack.nome}`} title="Rolar ataque" className="shrink-0 text-gray-400 hover:text-amber-400"><Dices size={16} /></button>
+      </div>
+
+      {expanded && (
+        <div className="mt-3 border-t border-zinc-800 pt-3" onClick={(event) => event.stopPropagation()}>
+          <div className="grid grid-cols-[minmax(0,1fr)_72px] gap-3">
+            <dl className="grid grid-cols-1 gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+              <div><dt className="inline text-amber-500">Ataque Bônus: </dt><dd className="inline text-gray-300">{fmtMod(toNumber(attack.ataqueBonus, 0))}</dd></div>
+              <div><dt className="inline text-amber-500">Tipo de Dano: </dt><dd className="inline text-gray-300">{attack.tipoDano}</dd></div>
+              <div><dt className="inline text-amber-500">Alcance: </dt><dd className="inline text-gray-300">{attack.alcance || "-"}</dd></div>
+              <div><dt className="inline text-amber-500">Perícia: </dt><dd className="inline text-gray-300">{attack.pericia || "-"}</dd></div>
+              <div><dt className="inline text-amber-500">Atributo Dano: </dt><dd className="inline text-gray-300">{attribute.label}</dd></div>
+              {attack.danoExtra.map((extra, index) => (
+                <div key={index} className="sm:col-span-2"><dt className="inline text-amber-500">Dano Extra: </dt><dd className="inline text-gray-300">{extra.formula || "-"} ({extra.tipoDano})</dd></div>
+              ))}
+            </dl>
+            {attack.imagem && <img src={attack.imagem} alt={`Imagem de ${attack.nome}`} className="h-[72px] w-[72px] rounded border border-zinc-800 object-cover" />}
+          </div>
+          {attack.anotacoes && <p className="mt-3 whitespace-pre-wrap border-t border-zinc-800 pt-2 text-xs leading-relaxed text-gray-300">{formatAttackNotes(attack.anotacoes)}</p>}
+          <footer className="mt-3 flex justify-between border-t border-zinc-800 pt-2 text-xs">
+            <button type="button" onClick={(event) => { event.stopPropagation(); onRemove(); }} className="text-red-400 hover:text-red-300">Remover</button>
+            <button type="button" onClick={(event) => { event.stopPropagation(); onEdit(); }} className="text-amber-500 hover:text-amber-300">Editar</button>
+          </footer>
+        </div>
       )}
+    </article>
+  );
+}
+
+function ConfirmAttackRemoval({ attack, onCancel, onConfirm }) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" onClick={(event) => event.target === event.currentTarget && onCancel()}>
+      <section role="alertdialog" aria-modal="true" aria-labelledby="remove-attack-title" className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-950 p-5 text-gray-200 shadow-2xl">
+        <h2 id="remove-attack-title" className="text-sm font-semibold text-gray-100">Remover ataque?</h2>
+        <p className="mt-2 text-sm text-gray-400">Tem certeza que deseja remover {attack.nome || "este ataque"}? Essa ação não pode ser desfeita.</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="rounded border border-zinc-700 px-3 py-2 text-sm text-gray-300 hover:bg-zinc-900">Cancelar</button>
+          <button type="button" onClick={onConfirm} className="rounded bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Remover</button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -810,7 +1076,7 @@ function HeaderPanel({ char, setHeader, updateChar, statusLabel, onShare, onOpen
   );
 }
 
-function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberField, updateChar, doRoll, locked, setLocked, setAttrScore }) {
+function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberField, updateChar, doRoll, locked, setLocked, setAttrScore, theme }) {
   return (
     <div className="col-span-1 md:col-span-4 flex flex-col space-y-5">
       <AttrHex
@@ -901,6 +1167,12 @@ function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberFie
         cur={char.hp.cur}
         max={char.hp.max}
         color={char.hp.color}
+        staticFill
+        allowOverflow
+        overflowLabel="vida extra"
+        numberColor={char.hp.numberColor}
+        defaultNumberColor={theme === "light" ? "#292619" : "#f4f4f5"}
+        onNumberColorChange={(numberColor) => updateChar((c) => ({ ...c, hp: { ...c.hp, numberColor } }))}
         from="from-red-950/60 to-red-950/20"
         to="from-red-800 to-red-600"
         onColorChange={(color) => updateChar((c) => ({ ...c, hp: { ...c.hp, color } }))}
@@ -983,9 +1255,14 @@ function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberFie
         cur={char.magia.cur}
         max={char.magia.max}
         color={char.magia.color}
+        numberColor={char.magia.numberColor}
+        defaultNumberColor={theme === "light" ? "#292619" : "#f4f4f5"}
+        onNumberColorChange={(numberColor) => updateChar((c) => ({ ...c, magia: { ...c.magia, numberColor } }))}
         from="from-violet-950/60 to-violet-950/20"
         to="from-violet-700 to-cyan-500"
         editableLabel
+        allowOverflow
+        overflowLabel="mana extra"
         onToggleLabel={() =>
           updateChar((c) => ({
             ...c,
@@ -1125,46 +1402,100 @@ function SkillsPanel({
   );
 }
 
-function CombatTab({ char, setChar, doRoll }) {
+function CombatTab({ char, setChar, doRoll, prof }) {
+  const [draft, setDraft] = useState(null);
+  const [editingExisting, setEditingExisting] = useState(false);
+  const [pendingRemoval, setPendingRemoval] = useState(null);
+  const [expandedAttacks, setExpandedAttacks] = useState({});
+
+  const openNewAttack = () => {
+    setDraft({
+      id: uid(), nome: "", dano: "1d6", critico: 20, multiplicador: "x2", ataqueBonus: 0,
+      tipoDano: "Cortante", alcance: "", pericia: "", atributo: "des", danoExtra: [], imagem: null, anotacoes: "",
+    });
+    setEditingExisting(false);
+  };
+  const openEditAttack = (attack) => {
+    setDraft(migrateAttack(attack, prof, char.attrs));
+    setEditingExisting(true);
+  };
+  const saveAttack = (attack) => {
+    setChar((current) => ({
+      ...current,
+      attacks: editingExisting
+        ? current.attacks.map((item) => item.id === attack.id ? attack : item)
+        : [...current.attacks, attack],
+    }));
+    setDraft(null);
+  };
+  const confirmRemove = () => {
+    const attackId = pendingRemoval?.id;
+    setChar((current) => ({ ...current, attacks: current.attacks.filter((attack) => attack.id !== attackId) }));
+    setExpandedAttacks((current) => {
+      const next = { ...current };
+      delete next[attackId];
+      return next;
+    });
+    setPendingRemoval(null);
+  };
+  const filteredAttacks = char.attacks.filter((attack) => {
+    const query = char.attackFilter.trim().toLowerCase();
+    return !query || (attack.nome || "").toLowerCase().includes(query);
+  });
+
   return (
     <div>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="flex-1 relative">
+      <div className="mb-3 flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-600" />
           <input
             value={char.attackFilter}
-            onChange={(e) => setChar((c) => ({ ...c, attackFilter: e.target.value }))}
+            onChange={(event) => setChar((current) => ({ ...current, attackFilter: event.target.value }))}
             placeholder="Filtrar ataques"
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-md pl-8 pr-3 py-2 text-xs text-gray-200 placeholder:text-zinc-600 focus:outline-none focus:border-red-800"
+            className="w-full rounded-md border border-zinc-800 bg-zinc-950 py-2 pl-8 pr-3 text-xs text-gray-200 placeholder:text-zinc-500 focus:border-amber-500 focus:outline-none"
           />
         </div>
-        <button
-          onClick={() =>
-            setChar((c) => ({
-              ...c,
-              attacks: [...c.attacks, { id: uid(), nome: '', bonus: '+0', dano: '', tipo: '', open: true }],
-            }))
-          }
-          className="flex items-center gap-1 px-3 py-2 border border-zinc-800 rounded-md text-[11px] tracking-[0.08em] uppercase text-gray-400 hover:border-red-800 hover:text-white transition-colors whitespace-nowrap"
-        >
-          <Plus size={12} /> Arma
+        <button type="button" onClick={openNewAttack} className="flex shrink-0 items-center gap-1 rounded border border-zinc-800 px-3 py-2 text-[11px] uppercase tracking-wide text-amber-500 hover:border-amber-500">
+          <Plus size={13} /> Novo Ataque
         </button>
       </div>
-      {char.attacks
-        .filter((atk) => {
-          const q = char.attackFilter.trim().toLowerCase();
-          if (!q) return true;
-          return (atk.nome || '').toLowerCase().includes(q);
-        })
-        .map((atk) => (
-          <WeaponCard
-            key={atk.id}
-            atk={atk}
-            onRoll={() => doRoll(`Ataque: ${atk.nome || 'sem nome'}`, parseModifier(atk.bonus))}
-            onChange={(next) => setChar((c) => ({ ...c, attacks: c.attacks.map((a) => (a.id === atk.id ? next : a)) }))}
-            onRemove={() => setChar((c) => ({ ...c, attacks: c.attacks.filter((a) => a.id !== atk.id) }))}
-          />
-        ))}
+
+      <div className="space-y-2">
+        {filteredAttacks.map((attack) => {
+          const attribute = ATTRS.find(({ key }) => key === attack.atributo) || ATTRS[0];
+          const totalBonus = prof + mod(char.attrs[attribute.key]?.score) + toNumber(attack.ataqueBonus, 0);
+          return (
+            <AttackCard
+              key={attack.id}
+              attack={attack}
+              bonus={totalBonus}
+              expanded={!!expandedAttacks[attack.id]}
+              onToggle={() => setExpandedAttacks((current) => ({ ...current, [attack.id]: !current[attack.id] }))}
+              onEdit={() => openEditAttack(attack)}
+              onRemove={() => setPendingRemoval(attack)}
+              onRoll={() => doRoll(`Ataque: ${attack.nome || "sem nome"}`, totalBonus)}
+            />
+          );
+        })}
+        {filteredAttacks.length === 0 && <p className="py-5 text-center text-xs text-zinc-500">Nenhum ataque encontrado.</p>}
+      </div>
+
+      {draft && (
+        <AttackEditorModal
+          key={draft.id}
+          attack={draft}
+          isEditing={editingExisting}
+          onClose={() => setDraft(null)}
+          onSave={saveAttack}
+        />
+      )}
+      {pendingRemoval && (
+        <ConfirmAttackRemoval
+          attack={pendingRemoval}
+          onCancel={() => setPendingRemoval(null)}
+          onConfirm={confirmRemove}
+        />
+      )}
     </div>
   );
 }
@@ -1337,7 +1668,7 @@ function RightPanel({
 }) {
   return (
     <div className="col-span-1 md:col-span-4 flex flex-col md:border-l md:border-zinc-900 md:pl-6">
-      <nav className="flex items-center gap-5 border-b border-zinc-900 pb-2.5 mb-4 overflow-x-auto">
+      <nav className="flex flex-wrap items-center gap-x-3 gap-y-0 border-b border-zinc-900 pb-2 mb-4">
         {TABS.map((t) => {
           const Icon = t.icon;
           const active = tab === t.name;
@@ -1345,7 +1676,7 @@ function RightPanel({
             <button
               key={t.name}
               onClick={() => setTab(t.name)}
-              className={`flex items-center gap-1.5 pb-2 text-[11px] tracking-[0.1em] uppercase whitespace-nowrap border-b-2 transition-colors ${
+              className={`flex items-center gap-1 pb-1 text-[10px] tracking-[0.05em] uppercase whitespace-nowrap border-b-2 transition-colors ${
                 active ? 'text-violet-400 border-violet-500' : 'text-gray-600 border-transparent hover:text-gray-400'
               }`}
             >
@@ -1376,47 +1707,7 @@ function RightPanel({
         />
       </div>
 
-      {tab === 'Combate' && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <div className="flex-1 relative">
-              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-600" />
-              <input
-                value={char.attackFilter}
-                onChange={(e) => setChar((c) => ({ ...c, attackFilter: e.target.value }))}
-                placeholder="Filtrar ataques"
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-md pl-8 pr-3 py-2 text-xs text-gray-200 placeholder:text-zinc-600 focus:outline-none focus:border-red-800"
-              />
-            </div>
-            <button
-              onClick={() =>
-                setChar((c) => ({
-                  ...c,
-                  attacks: [...c.attacks, { id: uid(), nome: '', bonus: '+0', dano: '', tipo: '', open: true }],
-                }))
-              }
-              className="flex items-center gap-1 px-3 py-2 border border-zinc-800 rounded-md text-[11px] tracking-[0.08em] uppercase text-gray-400 hover:border-red-800 hover:text-white transition-colors whitespace-nowrap"
-            >
-              <Plus size={12} /> Arma
-            </button>
-          </div>
-          {char.attacks
-            .filter((atk) => {
-              const q = char.attackFilter.trim().toLowerCase();
-              if (!q) return true;
-              return (atk.nome || '').toLowerCase().includes(q);
-            })
-            .map((atk) => (
-              <WeaponCard
-                key={atk.id}
-                atk={atk}
-                onRoll={() => doRoll(`Ataque: ${atk.nome || 'sem nome'}`, parseModifier(atk.bonus))}
-                onChange={(next) => setChar((c) => ({ ...c, attacks: c.attacks.map((a) => (a.id === atk.id ? next : a)) }))}
-                onRemove={() => setChar((c) => ({ ...c, attacks: c.attacks.filter((a) => a.id !== atk.id) }))}
-              />
-            ))}
-        </div>
-      )}
+      {tab === "Combate" && <CombatTab char={char} setChar={setChar} doRoll={doRoll} prof={prof} />}
 
       {tab === 'Magias/Runas' && (
         <div className="space-y-6">
@@ -1465,8 +1756,36 @@ function RightPanel({
                     {(char.magia.label || "").toLowerCase().includes("ki") ? "Mana" : "Ki"}
                   </button>
                 </div>
-                <div className="text-sm font-semibold text-gray-100 mt-0.5">
-                  {char.magia.cur}/{char.magia.max}
+                <div className="mt-0.5 flex items-baseline justify-center gap-1 text-sm font-semibold text-gray-100">
+                  <NumberInput
+                    value={char.magia.cur}
+                    maxLength={12}
+                    aria-label="Pontos de Mana atuais"
+                    onChange={(value) =>
+                      setChar((c) => {
+                        const cur = Math.max(0, toNumber(value, 0));
+                        const max = Math.max(0, toNumber(c.magia.max, 0));
+                        return { ...c, magia: { ...c.magia, cur, max: Math.max(max, cur) } };
+                      })
+                    }
+                    className="w-12 bg-transparent text-center text-sm font-semibold focus:outline-none"
+                  />
+                  <span className="text-white/50">/</span>
+                  <NumberInput
+                    value={char.magia.max}
+                    maxLength={12}
+                    aria-label="Pontos de Mana máximos"
+                    onChange={(value) =>
+                      setChar((c) => ({ ...c, magia: { ...c.magia, max: Math.max(0, toNumber(value, 0)) } }))
+                    }
+                    onBlur={() =>
+                      setChar((c) => {
+                        const max = Math.max(0, toNumber(c.magia.max, 0));
+                        return { ...c, magia: { ...c.magia, max, cur: Math.min(max, Math.max(0, toNumber(c.magia.cur, 0))) } };
+                      })
+                    }
+                    className="w-12 bg-transparent text-center text-sm font-semibold focus:outline-none"
+                  />
                 </div>
               </div>
               <div>
@@ -1784,6 +2103,7 @@ export default function RunarcanaSheet() {
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6 w-full max-w-7xl mx-auto mt-8 px-6 pb-10 items-start">
         <LeftPanel
           char={char}
+          theme={theme}
           ex={ex}
           prof={prof}
           caTotal={caTotal}
