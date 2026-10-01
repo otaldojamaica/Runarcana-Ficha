@@ -140,20 +140,22 @@ const parseModifier = (value = "0") => {
   const parsed = Number(String(value).replace(/[^-\d]/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
 };
-const uid = () => Math.random().toString(36).slice(2, 9);
+const uid = () => {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 
 function secureRoll(die) {
-  if (window.crypto && window.crypto.getRandomValues) {
-    const buf = new Uint32Array(1);
-    const max = Math.floor(0xffffffff / die) * die;
-    let x;
-    do {
-      window.crypto.getRandomValues(buf);
-      x = buf[0];
-    } while (x >= max);
-    return (x % die) + 1;
-  }
-  return Math.floor(Math.random() * die) + 1;
+  if (!Number.isInteger(die) || die < 2) throw new Error("O dado precisa ter pelo menos dois lados.");
+  if (!globalThis.crypto?.getRandomValues) throw new Error("Este navegador não oferece aleatoriedade segura.");
+
+  const sample = new Uint32Array(1);
+  const limit = Math.floor(0x100000000 / die) * die;
+  do {
+    globalThis.crypto.getRandomValues(sample);
+  } while (sample[0] >= limit);
+  return (sample[0] % die) + 1;
 }
 
 function loadChar() {
@@ -182,20 +184,42 @@ function restoreCharacter(data) {
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) {
     throw new Error("Arquivo de ficha inválido.");
   }
+  const record = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+  const savedHeader = record(saved.header);
+  const savedAttrs = record(saved.attrs);
+  const savedHp = record(saved.hp);
+  const savedMagia = record(saved.magia);
+  const savedMoedas = record(saved.moedas);
+  const savedDeathSaves = record(saved.deathSaves);
+  const savedExtras = record(saved.extras);
+  const attrs = Object.fromEntries(
+    ATTRS.map(({ key }) => [key, { ...defaults.attrs[key], ...record(savedAttrs[key]) }]),
+  );
+  const magia = {
+    ...defaults.magia,
+    ...savedMagia,
+    label: typeof savedMagia.label === "string" ? savedMagia.label : defaults.magia.label,
+    attr: ["int", "sab", "car"].includes(savedMagia.attr) ? savedMagia.attr : defaults.magia.attr,
+  };
   return {
     ...defaults,
     ...saved,
-    header: { ...defaults.header, ...(saved.header || {}) },
-    attrs: { ...defaults.attrs, ...(saved.attrs || {}) },
-    hp: { ...defaults.hp, ...(saved.hp || {}) },
-    magia: { ...defaults.magia, ...(saved.magia || {}) },
-    moedas: { ...defaults.moedas, ...(saved.moedas || {}) },
-    deathSaves: { ...defaults.deathSaves, ...(saved.deathSaves || {}) },
-    extras: { ...defaults.extras, ...(saved.extras || {}) },
-    attacks: Array.isArray(saved.attacks) ? saved.attacks : defaults.attacks,
-    habilidades: Array.isArray(saved.habilidades) ? saved.habilidades : defaults.habilidades,
-    magias: Array.isArray(saved.magias) ? saved.magias : defaults.magias,
-    inventario: Array.isArray(saved.inventario) ? saved.inventario : defaults.inventario,
+    header: { ...defaults.header, ...savedHeader },
+    attrs,
+    hp: { ...defaults.hp, ...savedHp },
+    magia,
+    moedas: { ...defaults.moedas, ...savedMoedas },
+    deathSaves: { ...defaults.deathSaves, ...savedDeathSaves },
+    extras: { ...defaults.extras, ...savedExtras },
+    savesTreino: record(saved.savesTreino),
+    skillsTreino: record(saved.skillsTreino),
+    skillsOutros: record(saved.skillsOutros),
+    attacks: Array.isArray(saved.attacks) ? saved.attacks.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.attacks,
+    habilidades: Array.isArray(saved.habilidades) ? saved.habilidades.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.habilidades,
+    magias: Array.isArray(saved.magias) ? saved.magias.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.magias,
+    inventario: Array.isArray(saved.inventario) ? saved.inventario.filter((item) => item && typeof item === "object" && !Array.isArray(item)) : defaults.inventario,
+    attackFilter: typeof saved.attackFilter === "string" ? saved.attackFilter : defaults.attackFilter,
+    freeRoll: typeof saved.freeRoll === "string" ? saved.freeRoll : defaults.freeRoll,
     runas: typeof saved.runas === "string" ? saved.runas : defaults.runas,
   };
 }
@@ -273,7 +297,7 @@ function HField({ label, value, onChange, type = "text" }) {
   );
 }
 
-function NumberInput({ value, onChange, className = "", onBlur, onFocus, placeholder = "0", maxLength = 2, ...rest }) {
+function NumberInput({ value, onChange, className = "", onBlur, onFocus, placeholder = "0", maxLength = 12, ...rest }) {
   const inputRef = useRef(null);
   const normalizedValue = value == null || value === "" || Number(value) === 0 ? "" : String(value);
   const [draft, setDraft] = useState(normalizedValue);
@@ -566,9 +590,9 @@ function AttrHex({ attrs, locked, onToggleLock, onScoreChange, onRoll }) {
   );
 }
 
-/* --------------------------------- Dice modal --------------------------------- */
+/* ---------------------------------- Dice toast --------------------------------- */
 
-function DiceModal({ roll, onClose, onReroll }) {
+function DiceToast({ roll, onClose, onReroll }) {
   const [phase, setPhase] = useState("rolling");
   const [display, setDisplay] = useState(1);
 
@@ -593,49 +617,40 @@ function DiceModal({ roll, onClose, onReroll }) {
   const total = chosen + m;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm" onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="bg-zinc-950 border border-red-900/60 rounded-xl px-10 py-8 text-center min-w-[250px]"
-        style={{ boxShadow: "0 0 60px rgba(153,27,27,0.25)" }}
-      >
-        <div className="text-[11px] tracking-[0.2em] text-gray-500 uppercase mb-3">{label}</div>
-        <div className={`text-6xl font-bold transition-colors ${phase === "rolling" ? "text-zinc-700" : "text-white"}`}>
+    <section
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-red-900/60 bg-zinc-950/95 p-5 text-center shadow-2xl backdrop-blur-sm"
+      style={{ boxShadow: "0 0 40px rgba(153,27,27,0.2)" }}
+    >
+      <div className="text-[11px] tracking-[0.2em] text-gray-500 uppercase mb-2">{label}</div>
+      <div className={`text-5xl font-bold transition-colors ${phase === "rolling" ? "text-zinc-700" : "text-white"}`}>
           {phase === "rolling" ? display : total}
-        </div>
-        {phase === "done" && (
+      </div>
+      {phase === "done" && (
+        <>
           <div className="text-xs text-gray-500 mt-2">
             {mode === "normal" && `d${roll.die} (${r1}) ${fmtMod(m)}`}
-            {mode === "adv" && (
-              <>
-                <span className="text-emerald-400">vantagem</span> · d{roll.die} ({r1}, {r2}) → {chosen} {fmtMod(m)}
-              </>
-            )}
-            {mode === "dis" && (
-              <>
-                <span className="text-red-400">desvantagem</span> · d{roll.die} ({r1}, {r2}) → {chosen} {fmtMod(m)}
-              </>
-            )}
+            {mode === "adv" && <><span className="text-emerald-400">vantagem</span> · d{roll.die} ({r1}, {r2}) → {chosen} {fmtMod(m)}</>}
+            {mode === "dis" && <><span className="text-red-400">desvantagem</span> · d{roll.die} ({r1}, {r2}) → {chosen} {fmtMod(m)}</>}
           </div>
-        )}
-        {phase === "done" && (
-          <div className="flex items-center justify-center gap-4 mt-5 text-[10px] tracking-[0.12em] uppercase">
-            <button onClick={() => onReroll("adv")} className="text-emerald-400/80 hover:text-emerald-400">
+          <div className="flex items-center justify-center gap-4 mt-4 text-[10px] tracking-[0.12em] uppercase">
+            <button type="button" onClick={() => onReroll("adv")} className="text-emerald-400/80 hover:text-emerald-400">
               Vantagem
             </button>
-            <button onClick={() => onReroll("normal")} className="text-violet-400 hover:text-violet-300">
+            <button type="button" onClick={() => onReroll("normal")} className="text-violet-400 hover:text-violet-300">
               Rolar de novo
             </button>
-            <button onClick={() => onReroll("dis")} className="text-red-400/80 hover:text-red-400">
+            <button type="button" onClick={() => onReroll("dis")} className="text-red-400/80 hover:text-red-400">
               Desvantagem
             </button>
           </div>
-        )}
-        <button onClick={onClose} className="mt-4 text-[10px] tracking-[0.15em] uppercase text-gray-600 hover:text-gray-300">
+        </>
+      )}
+      <button type="button" onClick={onClose} className="mt-3 text-[10px] tracking-[0.15em] uppercase text-gray-600 hover:text-gray-300">
           fechar
-        </button>
-      </div>
-    </div>
+      </button>
+    </section>
   );
 }
 
@@ -818,6 +833,7 @@ function LeftPanel({ char, ex, prof, caTotal, iniciativa, setExtra, setNumberFie
         <StatBox label="Inspiração" icon={Sparkles}>
           <NumberInput
             value={char.inspiracao}
+            aria-label="Inspiração"
             onChange={(value) => setNumberField("inspiracao", value)}
             className="w-10 bg-transparent text-center focus:outline-none"
           />
@@ -1734,7 +1750,7 @@ export default function RunarcanaSheet() {
   const prof = profBonus(char.header.nivel) + toNumber(ex.prof, 0);
   const caTotal = 10 + mod(char.attrs.des.score) + toNumber(char.caExtra, 0) + toNumber(char.caEscudo, 0);
   const iniciativa = mod(char.attrs.des.score) + toNumber(ex.iniciativa, 0);
-  const halfLevel = Math.max(1, Math.floor(clampLevel(char.header.nivel) / 2));
+  const halfLevel = Math.floor(clampLevel(char.header.nivel) / 2);
   const passivaPercepcao =
     10 + mod(char.attrs.sab.score) + (char.skillsTreino["Percepção"] ? prof : 0) + toNumber(ex.percepcao, 0);
   const passivaIntuicao =
@@ -1807,7 +1823,7 @@ export default function RunarcanaSheet() {
         />
       </div>
 
-      <DiceModal roll={roll} onClose={() => setRoll(null)} onReroll={reroll} />
+      <DiceToast roll={roll} onClose={() => setRoll(null)} onReroll={reroll} />
       {settingsOpen && (
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
