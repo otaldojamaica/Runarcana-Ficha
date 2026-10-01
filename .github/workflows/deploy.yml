@@ -43,3 +43,14 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Verify published Vite bundle
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          html="$(curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors "$PAGE_URL")"
+          asset_path="$(printf '%s' "$html" | grep -oE 'src="[^\"]+\.js"' | head -n 1 | cut -d '"' -f 2)"
+          if [ -z "$asset_path" ] || [[ "$asset_path" == /src/* ]]; then
+            echo "GitHub Pages is serving source HTML instead of the Vite build."
+            exit 1
+          fi
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors "${PAGE_URL%/}/${asset_path#./}" >/dev/null
